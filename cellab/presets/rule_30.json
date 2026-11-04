@@ -1,0 +1,28 @@
+{
+  "name": "Rule 30 (Wolfram Elementary 1D)",
+  "engine_type": "elementary_1d",
+  "rule_number": 30,
+  "grid": {
+    "dimensions": 1,
+    "shape": [100, 100],
+    "boundary": "wrap",
+    "initial_mode": "single_center"
+  },
+  "states": {
+    "DEAD": 0,
+    "ALIVE": 1
+  },
+  "colors": {
+    "0": [15, 23, 42],
+    "1": [245, 158, 11]
+  },
+  "neighborhood": {
+    "type": "moore",
+    "radius": 1
+  },
+  "rules": [
+    {"rule_number": 30}
+  ],
+  "agents": [],
+  "custom_initial_cells": []
+}

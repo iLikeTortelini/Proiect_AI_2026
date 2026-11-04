@@ -1,0 +1,30 @@
+{
+  "name": "Langton's Ant",
+  "engine_type": "agent_2d",
+  "grid": {
+    "dimensions": 2,
+    "shape": [100, 100],
+    "boundary": "wrap",
+    "initial_mode": "zeros"
+  },
+  "states": {
+    "WHITE": 0,
+    "BLACK": 1
+  },
+  "colors": {
+    "0": [24, 24, 37],
+    "1": [205, 214, 244]
+  },
+  "neighborhood": {
+    "type": "von_neumann",
+    "radius": 1
+  },
+  "rules": [
+    {"from": 0, "to": 1, "turn": "R"},
+    {"from": 1, "to": 0, "turn": "L"}
+  ],
+  "agents": [
+    {"row": 50, "col": 50, "dir": 0}
+  ],
+  "custom_initial_cells": []
+}

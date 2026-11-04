@@ -1,0 +1,31 @@
+{
+  "name": "Conway's Game of Life",
+  "engine_type": "synchronous_2d",
+  "grid": {
+    "dimensions": 2,
+    "shape": [100, 100],
+    "boundary": "wrap",
+    "initial_mode": "random",
+    "probabilities": [0.78, 0.22],
+    "seed": 42
+  },
+  "states": {
+    "DEAD": 0,
+    "ALIVE": 1
+  },
+  "colors": {
+    "0": [17, 17, 27],
+    "1": [0, 255, 204]
+  },
+  "neighborhood": {
+    "type": "moore",
+    "radius": 1
+  },
+  "rules": [
+    {"from": 1, "to": 0, "condition": {"type": "neighbor_count", "state": 1, "op": "<", "value": 2}},
+    {"from": 1, "to": 0, "condition": {"type": "neighbor_count", "state": 1, "op": ">", "value": 3}},
+    {"from": 0, "to": 1, "condition": {"type": "neighbor_count", "state": 1, "op": "==", "value": 3}}
+  ],
+  "agents": [],
+  "custom_initial_cells": []
+}

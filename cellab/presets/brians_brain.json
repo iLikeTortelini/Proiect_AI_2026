@@ -1,0 +1,34 @@
+{
+  "name": "Brian's Brain",
+  "engine_type": "synchronous_2d",
+  "grid": {
+    "dimensions": 2,
+    "shape": [100, 100],
+    "boundary": "wrap",
+    "initial_mode": "center_seed"
+  },
+  "states": {
+    "OFF": 0,
+    "FIRING": 1,
+    "DYING": 2
+  },
+  "colors": {
+    "0": [20, 20, 20],
+    "1": [0, 200, 255],
+    "2": [0, 60, 130]
+  },
+  "neighborhood": {
+    "type": "moore",
+    "radius": 1
+  },
+  "rules": [
+    {"from": 1, "to": 2, "condition": {"type": "always"}},
+    {"from": 2, "to": 0, "condition": {"type": "always"}},
+    {"from": 0, "to": 1, "condition": {"type": "neighbor_count", "state": 1, "op": "==", "value": 2}}
+  ],
+  "agents": [],
+  "custom_initial_cells": [
+    [49, 50, 1], [50, 49, 1], [50, 51, 1], [51, 50, 2],
+    [49, 49, 2], [50, 50, 2], [51, 49, 1], [51, 51, 1]
+  ]
+}
