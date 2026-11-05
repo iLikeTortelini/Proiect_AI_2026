@@ -1,0 +1,42 @@
+{
+  "name": "Crystal Growth",
+  "engine_type": "synchronous_2d",
+  "grid": {
+    "dimensions": 2,
+    "shape": [65, 65],
+    "boundary": "constant",
+    "initial_mode": "single_center"
+  },
+  "states": {
+    "EMPTY": 0,
+    "CRYSTAL": 1
+  },
+  "colors": {
+    "0": [15, 17, 26],
+    "1": [168, 85, 247]
+  },
+  "neighborhood": {
+    "type": "von_neumann",
+    "radius": 1
+  },
+  "rules": [
+    {
+      "from": 0,
+      "to": 1,
+      "condition": {
+        "type": "neighbor_count",
+        "state": 1,
+        "op": "==",
+        "value": 1
+      }
+    }
+  ],
+  "agents": [],
+  "custom_initial_cells": [],
+  "target_pattern": [
+    [0, 1, 0],
+    [1, 1, 1],
+    [0, 1, 0]
+  ]
+}
+

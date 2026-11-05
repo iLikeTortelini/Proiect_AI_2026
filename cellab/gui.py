@@ -2,7 +2,7 @@
 Module 4: Graphical User Interface (gui.py).
 Implements CelLabApp divided into three panels:
 - Left Panel: Configuration & Presets, editable JSON editor with "Apply / Validate JSON", N / X / FPS inputs
-- Center Panel: High-performance Grid Viewport (PIL.ImageTk NEAREST) & Playback Bar (Play, Stop, Next, Back, Reset)
+- Center Panel: High-performance Grid Viewport (PIL.ImageTk NEAREST), Iteration Timeline Slider & Playback Controls
 - Right Panel: 5 Questions Analytical Dashboard with Q1 Jump to Step N and Q3 sub-matrix pattern input
 """
 
@@ -13,7 +13,7 @@ import json
 import os
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 
 try:
@@ -50,7 +50,11 @@ class CelLabApp:
         self.var_target_n = tk.IntVar(value=100)
         self.var_target_state_x = tk.IntVar(value=1)
         self.var_fps = tk.IntVar(value=20)
+        self.var_iteration = tk.IntVar(value=0)
         self.var_pattern_input = tk.StringVar(value="1,1; 1,1")
+
+        self.drag_draw_val: Optional[Union[int, float]] = None
+        self._is_scrubbing_slider: bool = False
 
         # Lookup table mapping state ID -> [R, G, B]
         self.color_lut: np.ndarray = np.zeros((256, 3), dtype=np.uint8)
@@ -180,13 +184,15 @@ class CelLabApp:
             from_=1,
             to=100000,
             textvariable=self.var_target_n,
-            width=10,
+            width=8,
             bg="#313244",
             fg="#cdd6f4",
             insertbackground="#ffffff",
             font=("Consolas", 10),
+            command=self._on_target_n_changed,
         )
         self.spin_n.pack(side=tk.RIGHT)
+        self.spin_n.bind("<Return>", lambda e: self._on_target_n_changed())
 
         # Target Cell State (X)
         row_x = ttk.Frame(params_box, style="Panel.TFrame")
@@ -197,7 +203,7 @@ class CelLabApp:
             from_=0,
             to=255,
             textvariable=self.var_target_state_x,
-            width=10,
+            width=8,
             bg="#313244",
             fg="#cdd6f4",
             insertbackground="#ffffff",
@@ -205,24 +211,29 @@ class CelLabApp:
         )
         self.spin_x.pack(side=tk.RIGHT)
 
-        # Simulation Speed (FPS slider: 1 to 60)
+        # Speed (FPS) slider
         row_fps = ttk.Frame(params_box, style="Panel.TFrame")
         row_fps.pack(fill=tk.X, pady=(6, 2))
-        self.lbl_fps = ttk.Label(row_fps, text="Simulation Speed: 20 FPS", style="Panel.TLabel")
+        self.lbl_fps = ttk.Label(row_fps, text=f"Simulation Speed: {self.var_fps.get()} FPS", style="Panel.TLabel")
         self.lbl_fps.pack(anchor=tk.W)
 
-        self.fps_slider = ttk.Scale(
-            params_box,
+        self.slider_fps = tk.Scale(
+            row_fps,
             from_=1,
             to=60,
             orient=tk.HORIZONTAL,
+            variable=self.var_fps,
+            bg="#1e1e2e",
+            fg="#cdd6f4",
+            activebackground="#89b4fa",
+            troughcolor="#11111b",
+            highlightthickness=0,
             command=self._on_fps_changed,
         )
-        self.fps_slider.set(20)
-        self.fps_slider.pack(fill=tk.X, pady=(2, 0))
+        self.slider_fps.pack(fill=tk.X)
 
         # =====================================================================
-        # CENTER PANEL: Grid Viewport & Playback Bar
+        # CENTER PANEL: Grid Viewport Canvas & Playback Bar
         # =====================================================================
         center_panel = ttk.Frame(main_container, style="Panel.TFrame", padding=10)
         center_panel.pack(side=tk.LEFT, fill=tk.BOTH, expand=True, padx=(0, 8))
@@ -246,9 +257,10 @@ class CelLabApp:
         self.canvas.pack(fill=tk.BOTH, expand=True)
         self.canvas.bind("<Configure>", lambda e: self.render_viewport())
         self.canvas.bind("<Button-1>", self._on_canvas_click)
+        self.canvas.bind("<B1-Motion>", self._on_canvas_drag)
 
-        # Playback Control Bar
-        playback_bar = ttk.Frame(center_panel, style="Panel.TFrame", padding="4 10 4 2")
+        # Playback Control Bar (packed side=tk.BOTTOM first so it's at the very bottom)
+        playback_bar = ttk.Frame(center_panel, style="Panel.TFrame", padding="4 6 4 4")
         playback_bar.pack(side=tk.BOTTOM, fill=tk.X)
 
         self.btn_play = ttk.Button(
@@ -276,12 +288,47 @@ class CelLabApp:
         )
         self.btn_reset.pack(side=tk.LEFT, padx=4)
 
+        self.btn_set_gen0 = ttk.Button(
+            playback_bar, text="📌 Set as Gen 0", command=self.set_current_as_gen0
+        )
+        self.btn_set_gen0.pack(side=tk.LEFT, padx=4)
+
         ttk.Label(
             playback_bar,
-            text="(Click grid cells to toggle)",
+            text="(Click & drag to draw cells)",
             style="Panel.TLabel",
             font=("Segoe UI", 8, "italic"),
         ).pack(side=tk.RIGHT, padx=4)
+
+        # Iteration Timeline Bar (packed side=tk.BOTTOM second so it sits directly above playback_bar)
+        timeline_bar = ttk.Frame(center_panel, style="Panel.TFrame", padding="4 6 4 2")
+        timeline_bar.pack(side=tk.BOTTOM, fill=tk.X)
+
+        self.lbl_iteration_slider = ttk.Label(
+            timeline_bar,
+            text="Iteration: 0 / 100",
+            style="Panel.TLabel",
+            font=("Segoe UI", 9, "bold"),
+            width=20,
+        )
+        self.lbl_iteration_slider.pack(side=tk.LEFT, padx=(4, 6))
+
+        self.slider_iteration = tk.Scale(
+            timeline_bar,
+            from_=0,
+            to=100,
+            orient=tk.HORIZONTAL,
+            resolution=1,
+            bg="#1e1e2e",
+            fg="#cdd6f4",
+            activebackground="#89b4fa",
+            troughcolor="#11111b",
+            highlightthickness=0,
+            showvalue=False,
+            command=self._on_iteration_scrub,
+        )
+        self.slider_iteration.bind("<Button-1>", lambda e: self.stop_simulation())
+        self.slider_iteration.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=4)
 
         # =====================================================================
         # RIGHT PANEL: 5 Questions Analytical Dashboard
@@ -302,91 +349,102 @@ class CelLabApp:
         )
         self.btn_run_analysis.pack(fill=tk.X, pady=(0, 10))
 
-        # Q1 Card: State after N iterations
-        q1_box = self._create_question_frame(right_panel, "Q1: State After N Iterations")
-        self.lbl_q1 = ttk.Label(
-            q1_box, text="Click 'Run Full Analysis' to compute state at N.", style="Panel.TLabel", wraplength=355
+        # Scrollable container for question result cards
+        results_canvas = tk.Canvas(right_panel, bg="#1e1e2e", highlightthickness=0)
+        results_scrollbar = ttk.Scrollbar(right_panel, orient=tk.VERTICAL, command=results_canvas.yview)
+        self.results_inner = ttk.Frame(results_canvas, style="Panel.TFrame")
+
+        self.results_inner.bind(
+            "<Configure>",
+            lambda e: results_canvas.configure(scrollregion=results_canvas.bbox("all")),
         )
+        results_canvas.create_window((0, 0), window=self.results_inner, anchor="nw")
+        results_canvas.configure(yscrollcommand=results_scrollbar.set)
+
+        results_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        results_scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self._build_analysis_cards()
+
+    def _build_analysis_cards(self) -> None:
+        """Constructs individual cards for Questions 1 to 5."""
+        # Q1 Card
+        card_q1 = self._create_card("Q1: State After N Iterations")
+        self.lbl_q1 = ttk.Label(card_q1, text="Click 'Run Full Analysis' to compute state at N.", wraplength=350, style="Panel.TLabel")
         self.lbl_q1.pack(anchor=tk.W, pady=(0, 4))
-        self.btn_jump_n = ttk.Button(
-            q1_box, text="⏩ Jump Viewport to Step N", command=self.jump_viewport_to_n
-        )
+        self.btn_jump_n = ttk.Button(card_q1, text="➡ Jump Viewport to Step N", command=self.jump_viewport_to_n)
         self.btn_jump_n.pack(fill=tk.X)
 
-        # Q2 Card: Stability Detection
-        q2_box = self._create_question_frame(right_panel, "Q2: When Does System Stabilize?")
-        self.lbl_q2 = ttk.Label(
-            q2_box, text="Awaiting analysis...", style="Panel.TLabel", wraplength=355
-        )
+        # Q2 Card
+        card_q2 = self._create_card("Q2: When Does System Stabilize?")
+        self.lbl_q2 = ttk.Label(card_q2, text="Awaiting analysis...", wraplength=350, style="Panel.TLabel")
         self.lbl_q2.pack(anchor=tk.W)
 
-        # Q3 Card: Configuration Match
-        q3_box = self._create_question_frame(right_panel, "Q3: Does Target Configuration Occur?")
-        pat_row = ttk.Frame(q3_box, style="Panel.TFrame")
-        pat_row.pack(fill=tk.X, pady=(0, 4))
-        ttk.Label(pat_row, text="Sub-matrix:", style="Panel.TLabel").pack(side=tk.LEFT, padx=(0, 4))
-        self.ent_pattern = tk.Entry(
-            pat_row,
-            textvariable=self.var_pattern_input,
-            bg="#11111b",
-            fg="#cdd6f4",
-            insertbackground="#ffffff",
-            font=("Consolas", 9),
-        )
-        self.ent_pattern.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        # Q3 Card
+        card_q3 = self._create_card("Q3: Does Target Configuration Occur?")
+        row_pat = ttk.Frame(card_q3, style="Panel.TFrame")
+        row_pat.pack(fill=tk.X, pady=(0, 4))
+        ttk.Label(row_pat, text="Sub-matrix:", style="Panel.TLabel").pack(side=tk.LEFT)
+        self.ent_pattern = ttk.Entry(row_pat, textvariable=self.var_pattern_input)
+        self.ent_pattern.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(4, 0))
 
-        self.lbl_q3 = ttk.Label(
-            q3_box,
+        ttk.Label(
+            card_q3,
             text="Format e.g. '1,1; 1,1' for a 2x2 block.",
+            font=("Segoe UI", 8, "italic"),
+            foreground="#6c7086",
             style="Panel.TLabel",
-            wraplength=355,
-        )
+        ).pack(anchor=tk.W, pady=(0, 4))
+
+        self.lbl_q3 = ttk.Label(card_q3, text="Awaiting analysis...", wraplength=350, style="Panel.TLabel")
         self.lbl_q3.pack(anchor=tk.W)
 
-        # Q4 Card: Cell Counts at N
-        q4_box = self._create_question_frame(right_panel, "Q4: Cell Counts of State X After N Steps")
-        self.lbl_q4 = ttk.Label(
-            q4_box, text="Awaiting analysis...", style="Panel.TLabel", wraplength=355
-        )
-        self.lbl_q4.pack(anchor=tk.W, pady=(0, 3))
+        # Q4 Card
+        card_q4 = self._create_card("Q4: Cell Counts of State X After N Steps")
+        self.lbl_q4 = ttk.Label(card_q4, text="Awaiting analysis...", wraplength=350, style="Panel.TLabel")
+        self.lbl_q4.pack(anchor=tk.W, pady=(0, 4))
+
         self.txt_q4_breakdown = tk.Text(
-            q4_box,
+            card_q4,
             height=4,
             bg="#11111b",
-            fg="#f9e2af",
-            font=("Consolas", 9),
-            relief=tk.FLAT,
+            fg="#cdd6f4",
+            font=("Consolas", 8),
+            wrap=tk.WORD,
             state=tk.DISABLED,
         )
         self.txt_q4_breakdown.pack(fill=tk.X)
 
-        # Q5 Card: Cycle Detection
-        q5_box = self._create_question_frame(right_panel, "Q5: Does Simulation Enter a Cycle?")
-        self.lbl_q5 = ttk.Label(
-            q5_box, text="Awaiting analysis...", style="Panel.TLabel", wraplength=355
-        )
+        # Q5 Card
+        card_q5 = self._create_card("Q5: Does Simulation Enter a Cycle?")
+        self.lbl_q5 = ttk.Label(card_q5, text="Awaiting analysis...", wraplength=350, style="Panel.TLabel")
         self.lbl_q5.pack(anchor=tk.W)
 
-    def _create_question_frame(self, parent: ttk.Widget, title: str) -> tk.LabelFrame:
-        box = tk.LabelFrame(
-            parent,
+    def _create_card(self, title: str) -> tk.LabelFrame:
+        card = tk.LabelFrame(
+            self.results_inner,
             text=f" {title} ",
             bg="#1e1e2e",
             fg="#89b4fa",
             font=("Segoe UI", 9, "bold"),
             padx=8,
-            pady=6,
+            pady=8,
         )
-        box.pack(fill=tk.X, pady=4)
-        return box
+        card.pack(fill=tk.X, expand=True, pady=4, padx=2)
+        return card
 
     # =========================================================================
-    # Preset & JSON Loading
+    # Configuration Loading & Preset Discovery
     # =========================================================================
 
-    def _discover_and_load_presets(self, initial_config_path: Optional[str] = None) -> None:
-        preset_dir = os.path.join(os.path.dirname(__file__), "presets")
-        files = sorted(glob.glob(os.path.join(preset_dir, "*.json")))
+    def _discover_and_load_presets(self, initial_config_path: Optional[str]) -> None:
+        """Finds preset .json files in cellab/presets and initializes dropdown."""
+        current_dir = os.path.dirname(os.path.abspath(__file__))
+        presets_dir = os.path.join(current_dir, "presets")
+
+        files: List[str] = []
+        if os.path.exists(presets_dir):
+            files = sorted(glob.glob(os.path.join(presets_dir, "*.json")))
 
         self.preset_paths: Dict[str, str] = {}
         display_names: List[str] = []
@@ -402,7 +460,6 @@ class CelLabApp:
         if initial_config_path and os.path.exists(initial_config_path):
             self.load_json_file(initial_config_path)
         elif display_names:
-            # Prefer Game Of Life as default if present, else first preset
             default_idx = 0
             for i, name in enumerate(display_names):
                 if "game of life" in name.lower():
@@ -462,12 +519,11 @@ class CelLabApp:
 
         self._build_color_lut(config)
 
-        # If config defines a target_pattern, populate the Q3 input box
         if config.target_pattern:
             rows_str = "; ".join(",".join(str(x) for x in r) for r in config.target_pattern)
             self.var_pattern_input.set(rows_str)
 
-        self.update_status_and_viewport()
+        self.update_status_and_viewport(update_slider=True)
 
     def _build_color_lut(self, config: AutomatonConfig) -> None:
         max_state = max(list(config.colors.keys()) + list(config.states.values()) + [1])
@@ -478,21 +534,46 @@ class CelLabApp:
                 self.color_lut[state_id] = rgb
 
     # =========================================================================
-    # Playback Controls (Play, Stop, Next, Back, Reset)
+    # Playback Controls & Timeline Slider
     # =========================================================================
 
     def play_simulation(self) -> None:
         """Starts non-blocking root.after timer that continuously calls step_forward()."""
         if not self.controller or self.is_playing:
             return
+
+        try:
+            target_n = max(1, int(self.var_target_n.get()))
+        except Exception:
+            target_n = 100
+
+        # If user is already at or past target_n and hits Play, advance target_n by 100
+        if self.controller.engine.generation >= target_n:
+            target_n = self.controller.engine.generation + 100
+            self.var_target_n.set(target_n)
+
         self.is_playing = True
         self._schedule_next_tick()
 
     def _schedule_next_tick(self) -> None:
         if not self.is_playing or not self.controller:
             return
+
+        try:
+            target_n = max(1, int(self.var_target_n.get()))
+        except Exception:
+            target_n = 100
+
+        if self.controller.engine.generation >= target_n:
+            self.stop_simulation()
+            return
+
         self.controller.step_forward()
-        self.update_status_and_viewport()
+        self.update_status_and_viewport(update_slider=True)
+
+        if self.controller.engine.generation >= target_n:
+            self.stop_simulation()
+            return
 
         fps = max(1, int(self.var_fps.get()))
         delay_ms = max(10, int(1000 / fps))
@@ -514,7 +595,7 @@ class CelLabApp:
         if not self.controller:
             return
         self.controller.step_forward()
-        self.update_status_and_viewport()
+        self.update_status_and_viewport(update_slider=True)
 
     def step_back(self) -> None:
         """Pauses playback (if running) and reverts 1 generation."""
@@ -522,26 +603,59 @@ class CelLabApp:
         if not self.controller:
             return
         self.controller.step_backward()
-        self.update_status_and_viewport()
+        self.update_status_and_viewport(update_slider=True)
 
     def reset_simulation(self) -> None:
-        """Stops playback, clears history, and restores generation 0."""
+        """Stops playback, clears future history, and restores generation 0."""
         self.stop_simulation()
         if not self.controller:
             return
         self.controller.reset()
-        self.update_status_and_viewport()
+        self.update_status_and_viewport(update_slider=True)
+
+    def set_current_as_gen0(self) -> None:
+        """Sets the current grid state as the new initial state (Gen 0) for future runs."""
+        if not self.controller:
+            return
+        self.stop_simulation()
+        self.controller.set_current_as_initial()
+        self.update_status_and_viewport(update_slider=True)
+        messagebox.showinfo(
+            "State Saved as Initial",
+            "Current pattern has been set as Generation 0!\nPressing Reset or Play will now run from this state.",
+        )
 
     def _on_fps_changed(self, val: str) -> None:
         fps_int = max(1, int(float(val)))
         self.var_fps.set(fps_int)
         self.lbl_fps.config(text=f"Simulation Speed: {fps_int} FPS")
 
+    def _on_target_n_changed(self) -> None:
+        try:
+            val = int(self.var_target_n.get())
+        except Exception:
+            val = 100
+        if self.controller:
+            self.update_status_and_viewport(update_slider=False)
+
+    def _on_iteration_scrub(self, val_str: str) -> None:
+        """Called when user scrubs the generation timeline slider."""
+        if self._is_scrubbing_slider or self.is_playing or not self.controller or not self.config:
+            return
+        try:
+            target_gen = int(round(float(val_str)))
+        except (ValueError, TypeError):
+            return
+
+        if target_gen != self.controller.engine.generation:
+            self.controller.seek_generation(target_gen)
+            self.update_status_and_viewport(update_slider=False)
+
     # =========================================================================
     # Viewport Rendering & Interaction
     # =========================================================================
 
-    def update_status_and_viewport(self) -> None:
+    def update_status_and_viewport(self, update_slider: bool = True) -> None:
         if not self.controller or not self.config:
             return
         eng = self.controller.engine
@@ -551,7 +665,23 @@ class CelLabApp:
         self.lbl_status_header.config(
             text=f"{self.config.name}  |  Generation: {eng.generation}  |  Active Cells: {active_cells:,} / {total_cells:,}"
         )
-        self.btn_back.config(state=tk.NORMAL if len(self.controller.history) > 0 else tk.DISABLED)
+        self.btn_back.config(state=tk.NORMAL if eng.generation > 0 else tk.DISABLED)
+
+        # Update Timeline Slider bounds only when changed to avoid interrupting mouse drag
+        max_n = max(self.var_target_n.get(), self.controller.max_simulated_gen, eng.generation, 100)
+        if getattr(self, "_last_slider_max", None) != max_n:
+            self._last_slider_max = max_n
+            self.slider_iteration.config(to=max_n)
+
+        if update_slider:
+            self._is_scrubbing_slider = True
+            try:
+                self.slider_iteration.set(eng.generation)
+            finally:
+                self._is_scrubbing_slider = False
+
+        self.lbl_iteration_slider.config(text=f"Iteration: {eng.generation} / {max_n}")
+
         self.render_viewport()
 
     def render_viewport(self) -> None:
@@ -598,40 +728,79 @@ class CelLabApp:
             self.canvas.delete("all")
             self.canvas.create_image(cw // 2, ch // 2, image=self.photo_image, anchor=tk.CENTER)
         else:
-            ppm_header = f"P6 {cols} {rows} 255\n".encode("ascii")
-            self.photo_image = tk.PhotoImage(data=ppm_header + rgb_matrix.tobytes())
+            # Fallback when Pillow is not installed: scale using NumPy repeat so it fills the viewport
+            scale_int = max(1, int(min(cw / cols, ch / rows)))
+            scaled_matrix = np.repeat(np.repeat(rgb_matrix, scale_int, axis=0), scale_int, axis=1)
+            sh, sw, _ = scaled_matrix.shape
+            ppm_header = f"P6 {sw} {sh} 255\n".encode("ascii")
+            self.photo_image = tk.PhotoImage(data=ppm_header + scaled_matrix.tobytes())
             self.canvas.delete("all")
             self.canvas.create_image(cw // 2, ch // 2, image=self.photo_image, anchor=tk.CENTER)
 
-    def _on_canvas_click(self, event: tk.Event) -> None:
-        """Toggles or increments cell state when user clicks on the grid viewport."""
-        if not self.controller or not self.config:
-            return
-        eng = self.controller.engine
-        rows, cols = eng.grid.shape
+    def _canvas_to_grid_coords(self, x: int, y: int) -> Optional[Tuple[int, int]]:
+        """Maps canvas pixel (x, y) to matrix cell (row, col)."""
+        if not self.controller:
+            return None
+        rows, cols = self.controller.engine.grid.shape
         cw = self.canvas.winfo_width()
         ch = self.canvas.winfo_height()
+        if cw < 10 or ch < 10:
+            return None
 
         scale = min(cw / cols, ch / rows)
+        if scale <= 0:
+            return None
         gw = cols * scale
         gh = rows * scale
         ox = (cw - gw) / 2.0
         oy = (ch - gh) / 2.0
 
-        c = int((event.x - ox) / scale)
-        r = int((event.y - oy) / scale)
-
+        c = int((x - ox) / scale)
+        r = int((y - oy) / scale)
         if 0 <= r < rows and 0 <= c < cols:
-            if self.config.engine_type == "sandpile_2d":
-                eng.grid[r, c] += 4
-            elif self.config.engine_type == "continuous_2d":
-                eng.grid[r, c] = 100.0
-            else:
-                state_ids = sorted(self.config.states.values())
-                curr = int(eng.grid[r, c])
-                next_idx = (state_ids.index(curr) + 1) % len(state_ids) if curr in state_ids else 0
-                eng.grid[r, c] = state_ids[next_idx]
-            self.update_status_and_viewport()
+            return r, c
+        return None
+
+    def _on_canvas_click(self, event: tk.Event) -> None:
+        """Toggles cell state and initiates draw value for dragging."""
+        if not self.controller or not self.config:
+            return
+        coords = self._canvas_to_grid_coords(event.x, event.y)
+        if coords is None:
+            return
+        r, c = coords
+        eng = self.controller.engine
+
+        if self.config.engine_type == "sandpile_2d":
+            eng.grid[r, c] += 4
+            self.drag_draw_val = eng.grid[r, c]
+        elif self.config.engine_type == "continuous_2d":
+            eng.grid[r, c] = 100.0
+            self.drag_draw_val = 100.0
+        else:
+            state_ids = sorted(self.config.states.values())
+            curr = int(eng.grid[r, c])
+            next_idx = (state_ids.index(curr) + 1) % len(state_ids) if curr in state_ids else 0
+            new_val = state_ids[next_idx]
+            eng.grid[r, c] = new_val
+            self.drag_draw_val = new_val
+
+        self.controller.on_grid_manually_edited()
+        self.update_status_and_viewport(update_slider=True)
+
+    def _on_canvas_drag(self, event: tk.Event) -> None:
+        """Allows drawing strokes or erasing cells continuously by dragging mouse."""
+        if not self.controller or not self.config or self.drag_draw_val is None:
+            return
+        coords = self._canvas_to_grid_coords(event.x, event.y)
+        if coords is None:
+            return
+        r, c = coords
+        eng = self.controller.engine
+        if eng.grid[r, c] != self.drag_draw_val:
+            eng.grid[r, c] = self.drag_draw_val
+            self.controller.on_grid_manually_edited()
+            self.update_status_and_viewport(update_slider=True)
 
     # =========================================================================
     # Right Panel: 5-Question Analytical Execution
@@ -702,7 +871,7 @@ class CelLabApp:
         except Exception:
             target_n = 100
         self.controller.jump_to_generation(target_n)
-        self.update_status_and_viewport()
+        self.update_status_and_viewport(update_slider=True)
 
 
 # Backwards-compatible alias and launcher

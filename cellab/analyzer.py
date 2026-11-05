@@ -1,14 +1,13 @@
 """
 Module 3: History Manager & 5-Question Analyzer (analyzer.py).
 Implements SimulationController wrapping an active BaseEngine instance,
-managing the 2000-step undo history deque, and answering the 5 analytical questions.
+managing the state history cache, and answering the 5 analytical questions.
 """
 
 from __future__ import annotations
 
 import json
-from collections import deque
-from typing import Any, Deque, Dict, List, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 from numpy.lib.stride_tricks import sliding_window_view
 
@@ -88,54 +87,127 @@ def match_subgrid_pattern(grid: np.ndarray, pattern: np.ndarray) -> Optional[Tup
 
 class SimulationController:
     """
-    Wraps an active BaseEngine instance, provides Playback & History stack
-    (step_forward, step_backward, reset), and executes the 5-Question Analyzer.
+    Wraps an active BaseEngine instance, provides Playback & History cache
+    (step_forward, step_backward, seek_generation, reset), and executes the 5-Question Analyzer.
     """
 
     def __init__(self, engine: BaseEngine, max_history: int = 2000):
         self.engine: BaseEngine = engine
-        self.history: Deque[Tuple[int, np.ndarray, Any]] = deque(maxlen=max_history)
+        self.max_history: int = max_history
+        self.history_by_gen: Dict[int, Tuple[np.ndarray, Any]] = {}
+        self.max_simulated_gen: int = 0
+        self.record_current_state()
+
+    @property
+    def history(self) -> List[int]:
+        """Provides backwards compatibility for checking history availability."""
+        return [g for g in self.history_by_gen.keys() if g < self.engine.generation]
+
+    def record_current_state(self) -> None:
+        """Stores current grid and agent/row state snapshot at current generation."""
+        g = int(self.engine.generation)
+        self.history_by_gen[g] = (
+            self.engine.grid.copy(),
+            self.engine.get_agent_state_copy(),
+        )
+        if g > self.max_simulated_gen:
+            self.max_simulated_gen = g
+
+        if len(self.history_by_gen) > self.max_history:
+            non_zero_keys = [k for k in self.history_by_gen.keys() if k != 0]
+            if non_zero_keys:
+                del self.history_by_gen[min(non_zero_keys)]
 
     def set_engine(self, engine: BaseEngine) -> None:
-        """Replaces the active engine and clears history."""
+        """Replaces the active engine and resets history cache."""
         self.engine = engine
-        self.history.clear()
+        self.history_by_gen.clear()
+        self.max_simulated_gen = 0
+        self.record_current_state()
 
     def step_forward(self) -> np.ndarray:
-        """Pushes current state to self.history, calls engine.step(), and returns new state."""
-        self.history.append(
-            (
-                self.engine.generation,
-                self.engine.grid.copy(),
-                self.engine.get_agent_state_copy(),
-            )
-        )
-        return self.engine.step()
+        """Advances 1 step. If next generation is already cached, restores it; else simulates it."""
+        next_gen = self.engine.generation + 1
+        if next_gen in self.history_by_gen:
+            grid_snap, agent_snap = self.history_by_gen[next_gen]
+            self.engine.set_state(grid_snap, next_gen, agent_snap)
+        else:
+            self.engine.step()
+            self.record_current_state()
+        return self.engine.grid.copy()
 
     def step_backward(self) -> Optional[np.ndarray]:
-        """Pops the last state from self.history and restores it into engine (if history is non-empty)."""
-        if not self.history:
+        """Steps back 1 generation using cached history."""
+        if self.engine.generation <= 0:
             return None
-        gen_num, grid_snap, agent_snap = self.history.pop()
-        self.engine.set_state(grid_snap, gen_num, agent_snap)
-        return self.engine.grid.copy()
+        prev_gen = self.engine.generation - 1
+        if prev_gen in self.history_by_gen:
+            grid_snap, agent_snap = self.history_by_gen[prev_gen]
+            self.engine.set_state(grid_snap, prev_gen, agent_snap)
+            return self.engine.grid.copy()
+        return None
 
-    def reset(self) -> np.ndarray:
-        """Clears self.history and calls engine.reset()."""
-        self.history.clear()
-        return self.engine.reset()
-
-    def jump_to_generation(self, target_gen: int) -> np.ndarray:
+    def seek_generation(self, target_gen: int) -> np.ndarray:
         """
-        Advances or resets-and-advances the active engine to `target_gen`,
-        recording steps in history so Back continues to work seamlessly.
+        Instantly restores state if target_gen is cached, or simulates forward if not yet reached.
         """
         target_gen = max(0, int(target_gen))
-        if self.engine.generation > target_gen:
-            self.reset()
+        if target_gen in self.history_by_gen:
+            grid_snap, agent_snap = self.history_by_gen[target_gen]
+            self.engine.set_state(grid_snap, target_gen, agent_snap)
+            return self.engine.grid.copy()
+
+        # If seeking to an uncached past generation, seek from nearest cached state <= target_gen
+        if target_gen < self.engine.generation:
+            available_lesser = [k for k in self.history_by_gen.keys() if k <= target_gen]
+            start_gen = max(available_lesser) if available_lesser else 0
+            if start_gen in self.history_by_gen:
+                grid_snap, agent_snap = self.history_by_gen[start_gen]
+                self.engine.set_state(grid_snap, start_gen, agent_snap)
+            else:
+                self.engine.reset()
+                self.record_current_state()
+
         while self.engine.generation < target_gen:
-            self.step_forward()
+            self.engine.step()
+            self.record_current_state()
+
         return self.engine.grid.copy()
+
+    def jump_to_generation(self, target_gen: int) -> np.ndarray:
+        return self.seek_generation(target_gen)
+
+    def reset(self) -> np.ndarray:
+        """Restores generation 0 and clears future history."""
+        self.engine.reset()
+        self.history_by_gen.clear()
+        self.max_simulated_gen = 0
+        self.record_current_state()
+        return self.engine.grid.copy()
+
+    def set_current_as_initial(self) -> None:
+        """Sets the current grid state as the new initial state (generation 0)."""
+        self.engine.initial_grid = self.engine.grid.copy()
+        self.engine.generation = 0
+        self.history_by_gen.clear()
+        self.max_simulated_gen = 0
+        self.record_current_state()
+
+    def on_grid_manually_edited(self) -> None:
+        """Invalidates future cached generations and records the newly edited state."""
+        g = self.engine.generation
+        to_delete = [k for k in self.history_by_gen if k > g]
+        for k in to_delete:
+            del self.history_by_gen[k]
+
+        self.history_by_gen[g] = (
+            self.engine.grid.copy(),
+            self.engine.get_agent_state_copy(),
+        )
+        self.max_simulated_gen = g
+
+        if g == 0:
+            self.engine.initial_grid = self.engine.grid.copy()
 
     def run_analysis(
         self,
